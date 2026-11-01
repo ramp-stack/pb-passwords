@@ -1,0 +1,90 @@
+[package]
+name = "peanut-butter-passwords"
+version = "0.1.0"
+edition = "2024"
+default-run = "peanut-butter-passwords"
+description = "A simple password list and generator built with CHK and AIR"
+
+[dependencies]
+ramp = {package = "ramp2", version = "3.0.4"}
+chk = {version = "2.0.0", git = "https://github.com/ramp-stack/chk", rev = "2da2ba12e6973c17ffa7d8e70dc218d342552fdf"}
+
+include_dir = "0.7.4"
+serde = { version = "1", features = ["derive"] }
+rand = "0.8"
+zeroize = { version = "1.8", features = ["derive"] }
+prism = { package = "prism2", version = "3.1.0" }
+uuid = { version = "1.16", features = ["v4"] }
+url = "2.5"
+ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSDictionary"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "block2"] }
+
+[dev-dependencies]
+serde_json = "1"
+media = { package = "media2", version = "0.1.1" }
+
+[lib]
+name="main"
+crate-type=["staticlib", "cdylib", "rlib"]
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
+[profile.dev.package.swash]
+opt-level = 3
+[profile.dev.package.skrifa]
+opt-level = 3
+[profile.dev.package.read-fonts]
+opt-level = 3
+[profile.dev.package.zeno]
+opt-level = 3
+[profile.dev.package.yazi]
+opt-level = 3
+[profile.dev.package.fontdue]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.gif]
+opt-level = 3
+[profile.dev.package.weezl]
+opt-level = 3
+
+[package.metadata.piston.ios]
+team = "RYYG6X8WK7"
+bundle_id = "org.ramp.pickle-passwords"
+minimum_os = "17.0"
+info_plist = "ios/Info.plist"
+resources = ["ios/PeanutButterPasswordsLaunchScreen.storyboard", "ios/PeanutButterPasswordsLaunchMark.png"]
+build_number = "2"
+
+[package.metadata.piston.notifications]
+enabled = false
+
+[package.metadata.piston.macos]
+team = "RYYG6X8WK7"
+info_plist = "macos/Info.plist"
+
+[package.metadata.piston.developer]
+team = "RYYG6X8WK7"
+identity = "023c8a09189d12e0755e224a9e8a6af15b21186758aef12e65b0231757dd3bdee0"
+
+[package.metadata.piston.testflight]
+app_id = "6829482410"
+version = "0.1.0"
+build_number = "2"
+state = "complete"
