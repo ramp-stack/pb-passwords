@@ -1,4 +1,5 @@
 //! Saved contact names merged with AIR sharing history, without duplicating credentials.
+use crate::requests::{LoginRequest, RequestStatus};
 use crate::sharing::LoginTransfer;
 use chk::profiles::Profile;
 use prism::air::{Instance, Name};
@@ -59,6 +60,43 @@ fn record(me: Name, transfer: &LoginTransfer, contacts: &mut BTreeMap<Name, Cont
     });
     contact.last_shared_at = contact.last_shared_at.max(transfer.created_at);
     contact.share_count += 1;
+}
+
+/// Responding to a request is an explicit share too. Incoming unanswered requests
+/// never become contacts, and repeated snapshots cannot inflate the share count.
+pub(crate) fn with_requests(
+    me: Name,
+    transfers: &[Instance<LoginTransfer>],
+    profiles: &[Instance<Profile>],
+    requests: &[Instance<LoginRequest>],
+) -> Vec<Contact> {
+    let mut contacts: BTreeMap<_, _> = from_sources(me, transfers, profiles)
+        .into_iter()
+        .map(|contact| (contact.name, contact))
+        .collect();
+    let mut seen = HashSet::new();
+    for instance in requests {
+        if !seen.insert(instance.id()) {
+            continue;
+        }
+        let Some(request) = instance.confirmed() else {
+            continue;
+        };
+        if request.recipient != me
+            || request.status != RequestStatus::Responded
+            || request.validate().is_err()
+        {
+            continue;
+        }
+        let contact = contacts.entry(request.requester).or_insert(Contact {
+            name: request.requester,
+            last_shared_at: 0,
+            share_count: 0,
+        });
+        contact.last_shared_at = contact.last_shared_at.max(request.created_at);
+        contact.share_count += request.responses.len();
+    }
+    sorted(contacts)
 }
 
 fn sorted(contacts: BTreeMap<Name, Contact>) -> Vec<Contact> {
@@ -216,6 +254,57 @@ mod tests {
                 share_count: 1,
             }]
         );
+    }
+
+    #[test]
+    fn answered_requests_count_shared_logins_once_and_ignore_unanswered_contacts() {
+        let memory = MemoryAir::default();
+        let (me, requester, unanswered_requester) = names();
+        let mut second_login = transfer(me, requester, 0).entry.clone();
+        second_login.title = "Another private service".into();
+        let answered = LoginRequest {
+            requester,
+            recipient: me,
+            subject: "Requested logins".into(),
+            status: RequestStatus::Responded,
+            created_at: 20,
+            responses: vec![transfer(me, requester, 0).entry.clone(), second_login],
+            response_saved: false,
+        };
+        assert!(answered.validate().is_ok());
+        let answered_id = memory.request(answered);
+        for status in [RequestStatus::Pending, RequestStatus::Accepted] {
+            memory.request(LoginRequest {
+                requester: unanswered_requester,
+                recipient: me,
+                subject: "Unanswered request".into(),
+                status,
+                created_at: 30,
+                responses: vec![],
+                response_saved: false,
+            });
+        }
+        let air = Air::new(memory.clone());
+        let mut requests: Vec<_> = crate::requests::open(&air).list().into_values().collect();
+        let repeated = requests
+            .iter()
+            .find(|request| request.id() == answered_id)
+            .unwrap()
+            .clone();
+        requests.push(repeated);
+        let expected = vec![Contact {
+            name: requester,
+            last_shared_at: 20,
+            share_count: 2,
+        }];
+        assert_eq!(with_requests(me, &[], &[], &requests), expected);
+
+        let reopened = Air::new(memory);
+        let restored: Vec<_> = crate::requests::open(&reopened)
+            .list()
+            .into_values()
+            .collect();
+        assert_eq!(with_requests(me, &[], &[], &restored), expected);
     }
 
     #[test]

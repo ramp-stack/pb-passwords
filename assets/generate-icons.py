@@ -29,7 +29,7 @@ badge = illustration(peanut, '<circle cx="128" cy="128" r="124" fill="#2E261D"/>
 
 # Familiar rounded controls, with a conventional padlock for password fields.
 icons={
- 'profile':'<circle cx="24" cy="15" r="8"/><path d="M9 41v-4c0-8 6-13 15-13s15 5 15 13v4Z"/>',
+ 'profile':'<circle cx="24" cy="16" r="7"/><path d="M10 39c0-8 5-13 14-13s14 5 14 13"/>',
  'group':'<circle cx="18" cy="15" r="7"/><path d="M5 40v-4c0-7 5-12 13-12s13 5 13 12v4ZM32 8a7 7 0 0 1 0 14m3 5c6 1 9 5 9 11v2"/>',
  'send':'<path d="m6 8 36 16-36 16 7-16Z"/><path d="M14 24h25"/>',
  'qr_code':'<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="30" y="6" width="12" height="12" rx="2"/><rect x="6" y="30" width="12" height="12" rx="2"/><path d="M30 30h5v5h7v7H30v-6M24 7v11M7 24h11m6 6v12m18-18h-8m-10 0h1"/>',
@@ -39,13 +39,16 @@ icons={
  'notes':'<path d="M12 6h19l8 8v27H12Z"/><path d="M30 6v10h9M19 24h13m-13 8h10"/>',
  'copy':'<rect x="17" y="16" width="24" height="26" rx="6"/><path d="M10 32H9a4 4 0 0 1-4-4V10a5 5 0 0 1 5-5h18a5 5 0 0 1 5 5"/>',
  'add':'<path d="M24 10v28M10 24h28"/>',
- 'edit':'<path d="m9 31 22-22q4-4 8 0t0 8L17 39l-10 2Z"/><path d="m27 13 8 8"/>',
- 'check':'<path d="m9 25 10 10L39 13"/>',
+ 'edit':'<path d="m10 30 22-22a4 4 0 0 1 6 6L16 36l-9 3Z"/><path d="m28 12 6 6M10 30l6 6"/>',
+ 'check':'<rect x="8" y="8" width="32" height="32" rx="11" fill="#F6ECDD"/>',
+ 'checkmark':'<path d="m10 25 9 9L38 14"/>',
  'unchecked':'<rect x="8" y="8" width="32" height="32" rx="11"/>',
  'link':'<path d="m19 29 10-10M17 33l-3 3a8 8 0 0 1-11-11l9-9a8 8 0 0 1 11 0m2 16a8 8 0 0 0 11 0l9-9a8 8 0 0 0-11-11l-3 3"/>',
  'delete':'<path d="M7 13h34M18 12V6h12v6M12 13l2 26q0 3 4 3h12q4 0 4-3l2-26M21 21v12m7-12v12"/>',
 }
-for name,art in icons.items(): (root/f'resources/icons/{name}.svg').write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><g fill="none" stroke="#F6ECDD" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round">{art}</g></svg>')
+for name,art in icons.items():
+    weight = 2.5 if name in {'profile', 'edit', 'checkmark'} else 3.8
+    (root/f'resources/icons/{name}.svg').write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><g fill="none" stroke="#F6ECDD" stroke-width="{weight}" stroke-linecap="round" stroke-linejoin="round">{art}</g></svg>')
 
 # The empty and saved states share the jar-vault rather than a separate mascot.
 sparkles = '<path d="M218 85v14m-7-7h14M32 172v10m-5-5h10" fill="none" stroke="#F4E4C5" stroke-width="5" stroke-linecap="round"/>'
@@ -54,7 +57,20 @@ saved_art = illustration('<g transform="translate(4 4) scale(.9)">'+jar+'</g><ci
 # A simple toast illustration keeps the generator's food reference easy to read.
 toast = '<path d="M60 104c-20-17-16-43 8-51 13-5 25-2 34 2 16-10 36-10 52 0 9-4 21-7 34-2 24 8 28 34 8 51v85c0 16-11 26-27 26H87c-16 0-27-10-27-26Z" fill="#B97C3D"/><path d="M73 104c-24-20-11-44 16-35l14 6 11-7c9-6 19-6 28 0l11 7 14-6c27-9 40 15 16 35v84c0 8-5 13-13 13H86c-8 0-13-5-13-13Z" fill="#F4E4C5"/><path d="M99 97c19-13 47-9 59 4 12 12-3 26 0 41 2 16 18 29 1 40-13 8-29-2-44 2-18 4-30-4-26-20 4-15 0-24-3-37-3-13 4-22 13-30Z" fill="#C98946"/><path d="M107 115c14-10 36-9 37-1 1 10-39 15-38 28 0 10 21 8 35 16" fill="none" stroke="#F4D29B" stroke-width="7" stroke-linecap="round"/>'
 generator_art = illustration('<g transform="rotate(-8 128 128)">'+toast+'</g>'+sparkles)
-for name, art in [('peanut-vault', empty_art), ('generator', generator_art), ('login-saved', saved_art)]:
+# A pantry-colored letter with a peanut seal distinguishes password requests
+# from saved logins, while retaining the same flat illustrated badge style.
+request_letter = '<g transform="rotate(-7 128 128)"><path d="M42 106 117 49c7-5 15-5 22 0l75 57v87c0 12-9 21-21 21H63c-12 0-21-9-21-21Z" fill="#B97C3D"/><rect x="69" y="43" width="118" height="132" rx="14" fill="#F6ECDD"/><path d="M89 70h78M89 87h57" fill="none" stroke="#C98946" stroke-width="7" stroke-linecap="round"/><path d="m42 106 86 58 86-58v87c0 12-9 21-21 21H63c-12 0-21-9-21-21Z" fill="#E9BC7B"/><path d="m48 202 57-51m103 51-57-51" fill="none" stroke="#C98946" stroke-width="5" stroke-linecap="round"/><circle cx="128" cy="160" r="28" fill="#F6ECDD"/><path d="M128 139c-8 0-13 6-12 13 1 5 5 7 5 12 0 4-4 7-5 12-1 7 4 12 12 12s13-5 12-12c-1-5-5-8-5-12 0-5 4-7 5-12 1-7-4-13-12-13Z" transform="translate(0 -4)" fill="#B97C3D"/><path d="m122 146 12 10m-12 11 12 10m-12-21 12-10m-12 31 12-10" fill="none" stroke="#E9BC7B" stroke-width="2.5" stroke-linecap="round"/></g>'
+request_art = illustration(request_letter, '<circle cx="128" cy="128" r="124" fill="#2E261D"/>')
+request_sent_art = illustration('<g transform="translate(-5 -5) scale(.94)">'+request_letter+'</g><circle cx="196" cy="197" r="43" fill="#151412"/><circle cx="196" cy="197" r="33" fill="#F4E4C5"/><path d="m180 197 11 11 23-25" fill="none" stroke="#52351F" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>')
+# Two peanut-stamped login cards and a passing arrow celebrate a completed share.
+# The dots are abstract credential marks, never sample account information.
+def login_card(paper, ink, seal):
+    return f'<rect width="142" height="100" rx="17" fill="{paper}"/><circle cx="28" cy="29" r="18" fill="{seal}"/><path d="M28 17c-5 0-8 4-7 8 0 3 3 4 3 7 0 2-3 4-3 7-1 4 2 7 7 7s8-3 7-7c0-3-3-5-3-7 0-3 3-4 3-7 1-4-2-8-7-8Z" transform="translate(0 -3)" fill="{ink}"/><path d="m25 21 6 5m-6 8 6 5m-6-13 6-5m-6 18 6-5" fill="none" stroke="{paper}" stroke-width="1.8" stroke-linecap="round"/><path d="M57 24h61M57 36h39" fill="none" stroke="{ink}" stroke-width="6" stroke-linecap="round"/><path d="M18 56h106" fill="none" stroke="{ink}" stroke-opacity=".3" stroke-width="2"/>'+''.join(f'<circle cx="{x}" cy="76" r="4.5" fill="{ink}"/>' for x in [23, 42, 61, 80, 99, 118])
+shared_cards = '<g transform="translate(26 37) rotate(-11 71 50)">'+login_card('#C98946', '#F6ECDD', '#A86632')+'</g><g transform="translate(86 112) rotate(7 71 50)">'+login_card('#F6ECDD', '#815128', '#E9BC7B')+'</g>'
+passing_arrow = '<path d="M43 167c-19 29-1 59 32 59 12 0 24-4 34-12m-19 1 20-3-3 20" fill="none" stroke="#E9BC7B" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>'
+shared_sparkles = '<path d="M218 62v16m-8-8h16M26 103v10m-5-5h10" fill="none" stroke="#F4E4C5" stroke-width="4" stroke-linecap="round"/>'
+passwords_shared_art = illustration(shared_cards+passing_arrow+shared_sparkles)
+for name, art in [('peanut-vault', empty_art), ('generator', generator_art), ('login-saved', saved_art), ('password-request', request_art), ('request-sent', request_sent_art), ('passwords-shared', passwords_shared_art)]:
     (root / f'resources/illustrations/{name}.svg').write_text(art)
 
 # The platform icon is fully opaque; iOS applies its own corner mask.

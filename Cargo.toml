@@ -73,7 +73,13 @@ resources = ["ios/PeanutButterPasswordsLaunchScreen.storyboard", "ios/PeanutButt
 build_number = "2"
 
 [package.metadata.piston.notifications]
-enabled = false
+enabled = true
+
+[package.metadata.piston.notifications.ios.development]
+team = "RYYG6X8WK7"
+topic = "org.ramp.pickle-passwords"
+identity = "023c8a09189d12e0755e224a9e8a6af15b21186758aef12e65b0231757dd3bdee0"
+application = "bea04c3adcb8c588b113f5fdf7a48b556f6ca07a871d08992ec4cfcb7ec5da02"
 
 [package.metadata.piston.macos]
 team = "RYYG6X8WK7"

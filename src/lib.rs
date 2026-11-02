@@ -4,7 +4,9 @@ use ramp::prism::{Application, drawable::Drawable};
 mod branding;
 mod contacts;
 mod links;
+mod notifications;
 mod passphrase;
+mod requests;
 mod runtime;
 mod secret;
 mod sharing;
@@ -22,6 +24,7 @@ impl Application for PeanutButterPasswords {
     }
 
     fn new(ctx: &mut Context) -> impl Drawable {
+        ctx.air.start::<notifications::RequestNotifications>(());
         ui::PasswordsApp::new(ctx).build_ui(
             ctx,
             Assets::new(vec![include_dir::include_dir!(

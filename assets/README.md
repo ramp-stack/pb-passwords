@@ -12,14 +12,19 @@ Palette: charcoal #151412, espresso #23211D, butter #E9BC7B, warm white #F6ECDD.
 ## Asset map
 
 - `assets/app-icon.svg` → `icon.png`: flat peanut-butter jar vault app icon, 1024px.
-- `resources/brand`: native logo, app-icon, error, and illustrated wordmark SVGs. The wordmark combines a flat spread-shaped label,
-  butter-colored outlined lettering, and a small peanut detail.
+- `resources/brand`: native logo, app-icon, error, and illustrated wordmark SVGs. The wordmark uses an organic peanut-butter smear,
+  uneven knife edges and spread ridges, with dark outlined lettering for contrast.
 - `resources/login-icons/peanut`: the single default login badge, SVG and 256px PNG.
 - `resources/illustrations/peanut-vault`: jar-vault empty-state artwork, SVG and PNG.
 - `resources/illustrations/generator`: toast with peanut-butter swirl, SVG and PNG.
 - `resources/illustrations/login-saved`: jar vault and checkmark, SVG and PNG.
+- `resources/illustrations/password-request`: flat envelope and peanut seal badge for request rows, SVG and 512px PNG.
+- `resources/illustrations/request-sent`: peanut-seal envelope with a confirmation badge for sent-request success pages, SVG and 512px PNG.
+- `resources/illustrations/passwords-shared`: two peanut-stamped login cards and a passing arrow for completed password sharing, SVG and 512px PNG.
 - `ios/PeanutButterPasswordsLaunchMark.png`: transparent flat launch mark.
 - `resources/icons`: custom rounded action/navigation SVGs.
+  Profile and edit use lighter strokes. `check` is the filled version of the
+  `unchecked` rounded square; `checkmark` keeps a separate tick for confirmations.
 
 ## Regenerate
 

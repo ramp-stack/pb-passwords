@@ -2,16 +2,17 @@
 use crate::{
     contacts,
     passphrase::{PassphraseOptions, generate_passphrase},
+    requests::{self, LoginRequest, RequestStatus},
     runtime::{ClipboardUi, copy_action},
     sharing::{self, LoginTransfer, TransferStatus},
     site_logos::SiteLogos,
     storage::{Entry, PasswordStore},
 };
-use chk::profiles::{Profile, ProfileAction};
+use chk::profiles::Profile;
 use chk::{
     Action, ActionItem, App, Assets, AvatarContent, AvatarIconStyle, Bumper, ChkTheme, Color,
     Context, Display, Flow, Form, FormAction, FormComplete, FormItem, FormValidState, Icons, Input,
-    ListItem, Offset, Page, PageType, Root, RootInfo, State, Theme, Watch, Watcher,
+    ListItem, Offset, Page, PageType, Root, RootInfo, Selector, State, Theme, Watch, Watcher,
 };
 use prism::air::{Instance, Name};
 use std::{
@@ -25,6 +26,12 @@ use uuid::Uuid;
 type Session = Rc<RefCell<PasswordStore>>;
 
 #[derive(Clone)]
+enum ShareFrom {
+    Login(String),
+    Contact(Name),
+}
+
+#[derive(Clone)]
 pub struct PasswordsApp {
     session: Session,
     logos: SiteLogos,
@@ -34,6 +41,7 @@ pub struct PasswordsApp {
 impl PasswordsApp {
     pub fn new(ctx: &mut Context) -> Self {
         sharing::open(&ctx.air);
+        requests::open(&ctx.air);
         Self {
             session: Rc::new(RefCell::new(PasswordStore::new(ctx))),
             logos: SiteLogos::default(),
@@ -58,14 +66,22 @@ impl PasswordsApp {
         Page::watching(
             (
                 Watch::contract(self.session.borrow().instance()),
-                Watch::list::<LoginTransfer>(),
+                (
+                    Watch::list::<LoginTransfer>(),
+                    Watch::list::<LoginRequest>(),
+                ),
                 LogoWatch(self.logos.clone()),
                 self.changes.clone(),
             ),
-            move |ctx: &mut Context, theme: &Theme, (_, transfers, _, ())| {
+            move |ctx: &mut Context, theme: &Theme, (_, (transfers, requests), _, ())| {
                 let mut items = vec![];
                 if let Err(error) =
                     sharing::reconcile_received(ctx, &mut app.session.borrow_mut(), &transfers)
+                {
+                    items.push(Display::text(&error));
+                }
+                if let Err(error) =
+                    requests::reconcile_received(ctx, &mut app.session.borrow_mut(), &requests)
                 {
                     items.push(Display::text(&error));
                 }
@@ -100,38 +116,17 @@ impl PasswordsApp {
                         .is_empty()
                         .then_some("A fresh start. Add your first password."),
                 ));
-                let incoming = transfers
-                    .into_iter()
-                    .filter_map(|instance| {
-                        let transfer = instance.confirmed()?;
-                        if transfer.recipient != app.name
-                            || transfer.status != TransferStatus::Pending
-                            || transfer.validate().is_err()
-                        {
-                            return None;
-                        }
-                        let row = ListItem::avatar(
-                            login_avatar(theme),
-                            label(&transfer.entry),
-                            "Ready to review",
-                            None,
-                            Some(flow(app.incoming(instance.clone()))),
-                        );
-                        Some(row)
-                    })
-                    .collect::<Vec<_>>();
-                if !incoming.is_empty() {
-                    items.push(Display::list(Some("Received logins"), incoming, None));
-                }
-                let name = app.name;
+                let search_app = app.clone();
                 let editor = app.clone();
                 PageType::root(
                     "Passwords",
                     vec![],
                     items,
                     Some((
-                        Icons::QrCode,
-                        Box::new(move |_: &mut Context, _: &Theme| flow(name_page(name))),
+                        Icons::Search,
+                        Box::new(move |_: &mut Context, theme: &Theme| {
+                            search_app.search_passwords(theme)
+                        }),
                     )),
                     Some((
                         "Add password".into(),
@@ -225,7 +220,7 @@ impl PasswordsApp {
                     let current = field.value(&snapshot).to_owned();
                     let generator = editor.clone();
                     let actions = (field == Field::Password).then(|| {
-                        vec![
+                        let mut actions = vec![
                             (
                                 "Paste".into(),
                                 Some("Pasted".into()),
@@ -248,7 +243,9 @@ impl PasswordsApp {
                                     }
                                 }),
                             ),
-                        ]
+                        ];
+                        actions.extend(editor.option_actions());
+                        actions
                     });
                     inputs.push(Input::text(
                         id,
@@ -291,7 +288,7 @@ impl PasswordsApp {
                         (Action::set_text(id, current).get())(ctx, theme);
                     }
                 }
-                let mut display = vec![editor.options_display()];
+                let mut display = vec![];
                 if !editor.notice.borrow().is_empty() {
                     display.push(Display::text(&editor.notice.borrow()));
                 }
@@ -376,23 +373,21 @@ impl PasswordsApp {
             },
         ))
     }
-    fn contacts(&self, login: Option<String>) -> Page {
+    fn contacts(&self) -> Page {
         let app = self.clone();
         Page::watching(
             (
                 Watch::list::<LoginTransfer>(),
                 Watch::list::<Profile>(),
+                Watch::list::<LoginRequest>(),
                 self.changes.clone(),
             ),
-            move |_: &mut Context, _: &Theme, (transfers, profiles, ())| {
-                let contacts = contacts::from_sources(app.name, &transfers, &profiles);
+            move |_: &mut Context, _: &Theme, (transfers, profiles, requests, ())| {
+                let contacts = contacts::with_requests(app.name, &transfers, &profiles, &requests);
                 let rows = contacts
                     .iter()
                     .map(|contact| {
-                        let next = match &login {
-                            Some(id) => app.confirm_recipient(id.clone(), contact.name),
-                            None => app.contact(contact.name),
-                        };
+                        let next = app.contact(contact.name);
                         let profile = profiles
                             .iter()
                             .find(|profile| profile.pending().name == Some(contact.name));
@@ -402,17 +397,13 @@ impl PasswordsApp {
                                 (
                                     profile.avatar.clone(),
                                     profile.username.clone(),
-                                    format!(
-                                        "{} · {}",
-                                        short_name(contact.name),
-                                        share_count(contact.share_count)
-                                    ),
+                                    short_name(contact.name),
                                 )
                             }
                             None => (
                                 AvatarContent::icon(Icons::Profile, AvatarIconStyle::Brand),
                                 short_name(contact.name),
-                                share_count(contact.share_count),
+                                String::new(),
                             ),
                         };
                         ListItem::avatar(avatar, &title, &subtitle, None, Some(flow(next)))
@@ -423,41 +414,22 @@ impl PasswordsApp {
                     rows,
                     Some("Add a contact or share a login to get started."),
                 )];
-                match &login {
-                    None => {
-                        let app = app.clone();
-                        PageType::root(
-                            "Contacts",
-                            vec![],
-                            items,
-                            None,
-                            Some((
-                                "Add contact".into(),
-                                Box::new(move |_: &mut Context, theme: &Theme| {
-                                    app.add_contact(theme)
-                                }),
-                            )),
-                            None,
-                        )
-                    }
-                    Some(id) => {
-                        let app = app.clone();
-                        let id = id.clone();
-                        PageType::display(
-                            "Share login",
-                            items,
-                            None,
-                            Bumper::custom(
-                                "Someone new",
-                                Action::custom(move |ctx: &mut Context, theme: &Theme| {
-                                    let mut next = app.recipient(id.clone(), theme);
-                                    (next.build(ctx, theme))(ctx, theme);
-                                }),
-                            ),
-                            Offset::Start,
-                        )
-                    }
-                }
+                let name = app.name;
+                let app = app.clone();
+                PageType::root(
+                    "Contacts",
+                    vec![],
+                    items,
+                    Some((
+                        Icons::QrCode,
+                        Box::new(move |_: &mut Context, _: &Theme| flow(name_page(name))),
+                    )),
+                    Some((
+                        "Add contact".into(),
+                        Box::new(move |_: &mut Context, theme: &Theme| app.add_contact(theme)),
+                    )),
+                    None,
+                )
             },
         )
     }
@@ -498,6 +470,21 @@ impl PasswordsApp {
         ))
     }
     fn share_login(&self, ctx: &mut Context, id: String, theme: &Theme) -> Flow {
+        let selector = Selector::new("contact name", self.contact_items(ctx));
+        let actions = vec![FormAction::Custom(
+            "New contact".into(),
+            None,
+            Icons::Add,
+            Action::flow(self.add_share_contact(theme, selector.clone())),
+        )];
+        self.share_picker_flow(
+            theme,
+            FormItem::selection("Share login", selector.with_actions(actions)),
+            ShareFrom::Login(id),
+        )
+    }
+
+    fn contact_items(&self, ctx: &mut Context) -> Vec<(ListItem, String)> {
         let transfers: Vec<_> = sharing::open(&ctx.air).list().into_values().collect();
         let profiles: Vec<_> = ctx
             .air
@@ -505,178 +492,46 @@ impl PasswordsApp {
             .list()
             .into_values()
             .collect();
-        if contacts::from_sources(self.name, &transfers, &profiles).is_empty() {
-            self.recipient(id, theme)
-        } else {
-            flow(self.contacts(Some(id)))
-        }
-    }
-    fn contact(&self, name: Name) -> Page {
-        let app = self.clone();
-        Page::watching(
-            (
-                Watch::list::<LoginTransfer>(),
-                Watch::list::<Profile>(),
-                self.changes.clone(),
-            ),
-            move |_: &mut Context, _: &Theme, (transfers, profiles, ())| {
-                let mut history = transfers
-                    .into_iter()
-                    .filter(|instance| {
-                        let transfer = instance.pending();
-                        transfer.sender == app.name
-                            && transfer.recipient == name
-                            && transfer.validate().is_ok()
-                    })
-                    .collect::<Vec<_>>();
-                history.sort_by(|a, b| {
-                    b.pending()
-                        .created_at
-                        .cmp(&a.pending().created_at)
-                        .then_with(|| a.id().cmp(&b.id()))
-                });
-                let rows = history
-                    .iter()
-                    .map(|instance| {
-                        let transfer = instance.pending();
-                        let status = transfer_status(instance);
-                        let username = login_username(&transfer.entry);
-                        let subtitle = if username.is_empty() {
-                            status.to_owned()
-                        } else {
-                            format!("{username} · {status}")
-                        };
-                        ListItem::plain(label(&transfer.entry), &subtitle, None, None)
-                    })
-                    .collect();
+        let requests: Vec<_> = requests::open(&ctx.air).list().into_values().collect();
+        contacts::with_requests(self.name, &transfers, &profiles, &requests)
+            .into_iter()
+            .map(|contact| {
                 let profile = profiles
-                    .into_iter()
-                    .find(|profile| profile.pending().name == Some(name));
-                let mut items = vec![];
-                let header = profile.map(|profile| {
-                    items.push(Display::cta(
-                        "Contact name",
-                        Some(&profile.pending().username),
-                        "",
-                        vec![],
-                    ));
-                    let app = app.clone();
-                    (
-                        Icons::Edit,
-                        Box::new(move |_: &mut Context, theme: &Theme| {
-                            app.edit_contact(profile.clone(), theme)
-                        }) as Box<dyn chk::FlowBuilder>,
-                    )
-                });
-                items.extend([
-                    Display::cta(
-                        "Peanut Butter Name",
-                        Some(&name.to_string()),
-                        "",
-                        vec![copy_action("Copy", &name.to_string())],
-                    ),
-                    Display::list(Some("Shared logins"), rows, Some("No shared logins yet.")),
-                ]);
-                let app = app.clone();
-                PageType::display(
-                    "Contact",
-                    items,
-                    header,
-                    Bumper::custom(
-                        "Share a login",
-                        Action::custom(move |ctx: &mut Context, theme: &Theme| {
-                            let mut next = flow(app.choose_login(name));
-                            (next.build(ctx, theme))(ctx, theme);
-                        }),
-                    ),
-                    Offset::Start,
-                )
-            },
-        )
-    }
-    fn edit_contact(&self, mut profile: Instance<Profile>, theme: &Theme) -> Flow {
-        let username = profile.pending().username.clone();
-        let app = self.clone();
-        let theme = theme.clone();
-        Flow::from_form(Form::page(
-            "Edit contact",
-            vec![FormItem::text_with_preset(
-                "Contact name",
-                &username,
-                None,
-                |_: &mut Context, value: String| {
-                    if value.trim().is_empty() {
-                        FormValidState::InvalidWithData("Enter a contact name.".into())
-                    } else if value.len() > 80 {
-                        FormValidState::InvalidWithData("This contact name is too long.".into())
-                    } else {
-                        FormValidState::Valid
-                    }
-                },
-            )],
-            vec![],
-            Box::new(move |ctx: &mut Context, values: &Vec<State>| {
-                if let Some(State::Text(value)) = values.first()
-                    && !value.trim().is_empty()
-                    && value.len() <= 80
-                {
-                    profile.send(ProfileAction::ChangeUsername(value.trim().to_owned()));
-                    app.changes.notify();
-                    done(ctx, &theme);
-                }
-                FormComplete::None
-            }),
-        ))
-    }
-    fn choose_login(&self, recipient: Name) -> Page {
-        let app = self.clone();
-        Page::watching(
-            (
-                Watch::contract(self.session.borrow().instance()),
-                self.changes.clone(),
-                LogoWatch(self.logos.clone()),
-            ),
-            move |_: &mut Context, theme: &Theme, _| {
-                let entries = match app.session.borrow_mut().entries() {
-                    Ok(entries) => entries,
-                    Err(error) => return message("Choose login", &error.to_string()),
-                };
-                let rows = entries
                     .iter()
-                    .map(|entry| {
-                        ListItem::avatar(
-                            app.logos
-                                .get(label(entry), &entry.url)
-                                .unwrap_or_else(|| login_avatar(theme)),
-                            label(entry),
-                            login_subtitle(entry),
-                            None,
-                            Some(flow(app.confirm_recipient(entry.id.clone(), recipient))),
-                        )
-                    })
-                    .collect();
-                PageType::display(
-                    "Choose login",
-                    vec![Display::list(
-                        None,
-                        rows,
-                        Some("Add a password before sharing a login."),
-                    )],
-                    None,
-                    Bumper::None,
-                    Offset::Start,
+                    .find(|profile| profile.pending().name == Some(contact.name));
+                let (avatar, title) = match profile {
+                    Some(profile) => {
+                        let profile = profile.pending();
+                        (profile.avatar.clone(), profile.username.clone())
+                    }
+                    None => (
+                        AvatarContent::icon(Icons::Profile, AvatarIconStyle::Brand),
+                        short_name(contact.name),
+                    ),
+                };
+                (
+                    ListItem::avatar(avatar, &title, &contact.name.to_string(), None, None),
+                    contact.name.to_string(),
                 )
-            },
-        )
+            })
+            .collect()
     }
-    fn recipient(&self, id: String, theme: &Theme) -> Flow {
-        let me = self.name;
+    fn selected_contacts(&self, keys: &[String]) -> Option<Vec<Name>> {
+        let recipients = keys
+            .iter()
+            .map(|key| sharing::recipient(key, self.name))
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()
+            .ok()?;
+        (!recipients.is_empty()).then(|| recipients.into_iter().collect())
+    }
+    fn add_share_contact(&self, theme: &Theme, selector: Selector) -> Flow {
         let app = self.clone();
+        let me = self.name;
         Flow::from_form(Form::flow(
             theme,
-            vec![FormItem::text_with_preset(
+            vec![FormItem::text(
+                "New contact",
                 "Peanut Butter Name",
-                "",
                 Some(vec![
                     FormAction::Paste,
                     FormAction::scan_qr_code("Scan their Peanut Butter Name"),
@@ -691,53 +546,331 @@ impl PasswordsApp {
             )],
             None,
             None,
-            Box::new(move |_: &mut Context, values: &Vec<State>| {
+            Box::new(move |ctx: &mut Context, values: &Vec<State>| {
                 let Some(State::Text(value)) = values.first() else {
                     return FormComplete::None;
                 };
-                match sharing::recipient(value, me) {
-                    Ok(recipient) => {
-                        FormComplete::Next(app.confirm_recipient(id.clone(), recipient))
-                    }
-                    Err(_) => FormComplete::None,
-                }
+                let Ok(name) = sharing::recipient(value, me) else {
+                    return FormComplete::None;
+                };
+                let profile = Profile::from_name(ctx, name);
+                let profile = profile.pending();
+                let row = ListItem::avatar(
+                    profile.avatar.clone(),
+                    &profile.username,
+                    &name.to_string(),
+                    None,
+                    None,
+                );
+                let selection = selector.select(row, name.to_string());
+                app.changes.notify();
+                FormComplete::Return(Box::new(move |ctx: &mut Context, theme: &Theme| {
+                    (selection.get())(ctx, theme)
+                }))
             }),
         ))
     }
-    fn confirm_recipient(&self, id: String, recipient: Name) -> Page {
+    fn contact(&self, name: Name) -> Page {
         let app = self.clone();
-        let entry = match self.entry(&id) {
-            Ok(entry) => entry,
-            Err(error) => return page(message("Share login", &error)),
+        Page::watching(
+            (Watch::list::<Profile>(), self.changes.clone()),
+            move |ctx: &mut Context, _: &Theme, (profiles, ())| {
+                let profile = profiles
+                    .into_iter()
+                    .find(|profile| profile.pending().name == Some(name))
+                    .unwrap_or_else(|| Profile::from_name(ctx, name));
+                // Reuse Orange's CHK profile page, including its avatar, bio, and editor.
+                let mut profile_page = chk::ProfileView::build(ctx, profile);
+                if let PageType::Display { items, .. } = &mut profile_page {
+                    let share_app = app.clone();
+                    let request_app = app.clone();
+                    for item in items.iter_mut() {
+                        match item {
+                            Display::Actions { .. } => {
+                                *item = Display::cta(
+                                    "Passwords",
+                                    None,
+                                    "",
+                                    vec![
+                                        ActionItem::new(
+                                            Action::custom({
+                                                let app = share_app.clone();
+                                                move |ctx: &mut Context, theme: &Theme| {
+                                                    let mut next = app.choose_logins(name, theme);
+                                                    (next.build(ctx, theme))(ctx, theme);
+                                                }
+                                            }),
+                                            "Share",
+                                            Icons::Send,
+                                        ),
+                                        ActionItem::new(
+                                            Action::custom({
+                                                let app = request_app.clone();
+                                                move |ctx: &mut Context, theme: &Theme| {
+                                                    let mut next =
+                                                        app.request_password(name, theme);
+                                                    (next.build(ctx, theme))(ctx, theme);
+                                                }
+                                            }),
+                                            "Request",
+                                            Icons::Credential,
+                                        ),
+                                    ],
+                                );
+                            }
+                            Display::Cta { label, .. } if label == "Orange name" => {
+                                *item = Display::cta(
+                                    "Peanut Butter Name",
+                                    None,
+                                    &name.to_string(),
+                                    vec![
+                                        copy_action("Copy", &name.to_string()),
+                                        ActionItem::new(
+                                            Action::flow(flow(page(PageType::display_qr_code(
+                                                "Peanut Butter Name",
+                                                &name.to_string(),
+                                                "",
+                                                true,
+                                            )))),
+                                            "Show QR code",
+                                            Icons::QrCode,
+                                        ),
+                                    ],
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                profile_page
+            },
+        )
+    }
+    fn login_selector(&self, theme: &Theme) -> Result<Selector, String> {
+        let entries = self
+            .session
+            .borrow_mut()
+            .entries()
+            .map_err(|error| error.to_string())?;
+        if entries.is_empty() {
+            return Err("Add a password to get started.".into());
+        }
+        let items = entries
+            .iter()
+            .map(|entry| {
+                (
+                    ListItem::avatar(
+                        self.logos
+                            .get(label(entry), &entry.url)
+                            .unwrap_or_else(|| login_avatar(theme)),
+                        label(entry),
+                        login_subtitle(entry),
+                        None,
+                        None,
+                    ),
+                    entry.id.clone(),
+                )
+            })
+            .collect();
+        Ok(Selector::new("passwords", items)
+            .with_limit(requests::MAX_RESPONSES)
+            .with_chip_subtitles(true))
+    }
+    fn search_passwords(&self, theme: &Theme) -> Flow {
+        let selector = match self.login_selector(theme) {
+            Ok(selector) => selector.with_limit(1),
+            Err(error) => return flow(page(message("Search passwords", &error))),
         };
-        page(PageType::display(
-            "Confirm recipient",
+        let app = self.clone();
+        Flow::from_form(Form::flow(
+            theme,
+            vec![FormItem::selection("Search passwords", selector)],
+            None,
+            None,
+            Box::new(move |_: &mut Context, values: &Vec<State>| {
+                let Some(State::Selection(ids)) = values.first() else {
+                    return FormComplete::None;
+                };
+                let [id] = ids.as_slice() else {
+                    return FormComplete::None;
+                };
+                FormComplete::Next(app.details(id.clone()))
+            }),
+        ))
+    }
+    fn choose_logins(&self, recipient: Name, theme: &Theme) -> Flow {
+        let selector = match self.login_selector(theme) {
+            Ok(selector) => selector,
+            Err(error) => return flow(page(message("Choose passwords", &error))),
+        };
+        self.share_picker_flow(
+            theme,
+            FormItem::selection("Choose passwords", selector),
+            ShareFrom::Contact(recipient),
+        )
+    }
+    fn share_picker_flow(&self, theme: &Theme, picker: FormItem, source: ShareFrom) -> Flow {
+        let selected = Rc::new(RefCell::new(Vec::<String>::new()));
+        let update = Signal::default();
+        let values = selected.clone();
+        let signal = update.clone();
+        let mut pages = Flow::from_form(Form::flow(
+            theme,
+            vec![picker],
+            None,
+            None,
+            Box::new(move |_: &mut Context, values_in: &Vec<State>| {
+                if let Some(State::Selection(keys)) = values_in.first() {
+                    *values.borrow_mut() = keys.clone();
+                    signal.notify();
+                }
+                FormComplete::None
+            }),
+        ));
+        let app = self.clone();
+        pages.0.push(Page::watching(
+            (
+                update,
+                LogoWatch(self.logos.clone()),
+                Watch::list::<Profile>(),
+                Watch::contract(self.session.borrow().instance()),
+            ),
+            move |ctx: &mut Context, theme: &Theme, _| {
+                let keys = selected.borrow().clone();
+                let (ids, recipients) = match &source {
+                    ShareFrom::Login(id) => {
+                        let Some(recipients) = app.selected_contacts(&keys) else {
+                            return message("Share passwords", "Choose a valid contact.");
+                        };
+                        (vec![id.clone()], recipients)
+                    }
+                    ShareFrom::Contact(name) => (keys, vec![*name]),
+                };
+                app.share_review(ctx, theme, ids, recipients)
+            },
+        ));
+        pages
+    }
+
+    fn selected_entries(&self, ids: &[String]) -> Result<Vec<Entry>, String> {
+        let ids = ids.iter().collect::<std::collections::BTreeSet<_>>();
+        if ids.is_empty() || ids.len() > requests::MAX_RESPONSES {
+            return Err("Choose between 1 and 32 logins.".into());
+        }
+        ids.into_iter()
+            .map(|id| {
+                let entry = self.entry(id)?;
+                entry.validate().map_err(|error| error.to_string())?;
+                Ok(entry)
+            })
+            .collect()
+    }
+    fn share_review(
+        &self,
+        ctx: &mut Context,
+        theme: &Theme,
+        ids: Vec<String>,
+        recipients: Vec<Name>,
+    ) -> PageType {
+        let recipients: Vec<_> = recipients
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if recipients.is_empty() || recipients.contains(&self.name) {
+            return message("Share passwords", "Choose another person to share with.");
+        }
+        let entries = match self.selected_entries(&ids) {
+            Ok(entries) => entries,
+            Err(error) => return message("Share passwords", &error),
+        };
+        let profiles = ctx
+            .air
+            .instances::<Profile>()
+            .list()
+            .into_values()
+            .collect::<Vec<_>>();
+        let labels = recipients
+            .iter()
+            .map(|name| {
+                let label = profiles
+                    .iter()
+                    .find_map(|profile| {
+                        let profile = profile.pending();
+                        (profile.name == Some(*name)).then(|| profile.username.clone())
+                    })
+                    .filter(|label| !label.trim().is_empty())
+                    .unwrap_or_else(|| short_name(*name));
+                (label, *name)
+            })
+            .collect::<Vec<_>>();
+        let to = labels
+            .iter()
+            .map(|(label, name)| {
+                if labels.iter().filter(|(other, _)| other == label).count() > 1 {
+                    format!("{label} ({})", short_name(*name))
+                } else {
+                    label.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let app = self.clone();
+        let rows = entries
+            .iter()
+            .map(|entry| {
+                ListItem::avatar(
+                    app.logos
+                        .get(label(entry), &entry.url)
+                        .unwrap_or_else(|| login_avatar(theme)),
+                    label(entry),
+                    login_subtitle(entry),
+                    None,
+                    Some(flow(page(PageType::display(
+                        "Login details",
+                        entry_items(entry, false),
+                        None,
+                        Bumper::Done,
+                        Offset::Start,
+                    )))),
+                )
+            })
+            .collect();
+        let app = app.clone();
+        let ids = ids.clone();
+        let recipients = recipients.clone();
+        PageType::display(
+            "Share passwords",
             vec![
-                Display::cta("Login", Some(label(&entry)), login_username(&entry), vec![]),
-                Display::cta("Send to", Some(&recipient.to_string()), "", vec![]),
-                Display::instructions(
-                    "Sends a copy of the app or website name, username, password, link, and notes.",
-                ),
+                Display::cta("To", Some(&to), "", vec![]),
+                Display::list(Some("Logins"), rows, None),
             ],
             None,
             Bumper::custom(
                 "Send",
                 Action::custom(move |ctx: &mut Context, theme: &Theme| {
-                    let result = app
-                        .entry(&id)
-                        .and_then(|entry| sharing::send(ctx, entry, recipient));
-                    let next = match result {
-                        Ok(instance) => {
-                            app.changes.notify();
-                            outgoing(instance)
+                    // Validate every current entry before queuing any copies.
+                    let result = app.selected_entries(&ids).and_then(|entries| {
+                        let mut sent = vec![];
+                        for recipient in &recipients {
+                            for entry in &entries {
+                                sent.push(sharing::send(ctx, entry.clone(), *recipient)?);
+                            }
                         }
-                        Err(error) => page(message("Share login", &error)),
+                        Ok(sent)
+                    });
+                    let next = match result {
+                        Ok(sent) => {
+                            app.changes.notify();
+                            share_sent(sent)
+                        }
+                        Err(error) => page(message("Share passwords", &error)),
                     };
                     FormComplete::Next(next).run(ctx, theme);
                 }),
             ),
             Offset::Start,
-        ))
+        )
     }
     fn incoming(&self, transfer: Instance<LoginTransfer>) -> Page {
         let app = self.clone();
@@ -756,7 +889,7 @@ impl PasswordsApp {
                     match sharing::receive(ctx, &mut app.session.borrow_mut(), &mut instance) {
                         Ok(true) => {
                             app.changes.notify();
-                            return success_type();
+                            return saved_success_type("Login saved");
                         }
                         Ok(false) => notice = Some("Saving login…".into()),
                         Err(error) => {
@@ -800,10 +933,7 @@ impl PasswordsApp {
                         "Decline",
                         Action::custom(move |ctx: &mut Context, theme: &Theme| {
                             match sharing::decline(ctx, &mut instance) {
-                                Ok(()) => {
-                                    app.changes.notify();
-                                    done(ctx, theme);
-                                }
+                                Ok(()) => app.changes.notify(),
                                 Err(error) => {
                                     FormComplete::Next(page(message("Received login", &error)))
                                         .run(ctx, theme)
@@ -835,7 +965,14 @@ impl App for PasswordsApp {
                 theme,
                 Icons::Group,
                 "Contacts",
-                Root::custom(self.contacts(None)),
+                Root::custom(self.contacts()),
+            ),
+            RootInfo::icon(
+                ctx,
+                theme,
+                Icons::Send,
+                "Requests",
+                Root::custom(self.requests_page()),
             ),
         ]
     }
@@ -857,13 +994,6 @@ fn label(entry: &Entry) -> &str {
         "Password"
     }
 }
-fn login_username(entry: &Entry) -> &str {
-    if entry.username == label(entry) {
-        ""
-    } else {
-        &entry.username
-    }
-}
 fn login_subtitle(entry: &Entry) -> &str {
     if !entry.username.is_empty() && entry.username != label(entry) {
         &entry.username
@@ -880,9 +1010,9 @@ fn message(title: &str, message: &str) -> PageType {
         Offset::Center,
     )
 }
-fn success_type() -> PageType {
+fn saved_success_type(title: &str) -> PageType {
     PageType::display(
-        "Login created",
+        title,
         vec![
             Display::image("illustrations/login-saved", (180.0, 180.0)),
             Display::confirmation_message("Your login is saved. Smooth work."),
@@ -893,7 +1023,7 @@ fn success_type() -> PageType {
     )
 }
 fn success() -> Page {
-    page(success_type())
+    page(saved_success_type("Login created"))
 }
 fn done(ctx: &mut Context, theme: &Theme) {
     FormComplete::Return(Box::new(|_: &mut Context, _: &Theme| {})).run(ctx, theme);
@@ -940,7 +1070,7 @@ fn entry_items(entry: &Entry, copy: bool) -> Vec<Display> {
 fn name_page(name: Name) -> Page {
     let name = name.to_string();
     page(PageType::display(
-        "Share name",
+        "Peanut Butter Name",
         vec![Display::cta(
             "Peanut Butter Name",
             Some(&name),
@@ -972,50 +1102,41 @@ fn short_name(name: Name) -> String {
         name
     }
 }
-fn share_count(count: usize) -> String {
-    match count {
-        0 => "No logins shared".into(),
-        1 => "Shared once".into(),
-        _ => format!("Shared {count} times"),
-    }
+fn shared_success_type() -> PageType {
+    PageType::display(
+        "",
+        vec![
+            Display::image("illustrations/passwords-shared", (180.0, 180.0)),
+            Display::confirmation_message("Shared!"),
+        ],
+        None,
+        Bumper::Done,
+        Offset::Center,
+    )
 }
-fn transfer_status(instance: &Instance<LoginTransfer>) -> &'static str {
-    match instance.confirmed() {
-        None => "Queued for sync",
-        Some(confirmed) => match confirmed.status {
-            TransferStatus::Pending => "Waiting for recipient",
-            TransferStatus::Accepted => "Accepted by recipient",
-            TransferStatus::Declined => "Declined by recipient",
-        },
-    }
-}
-fn outgoing(instance: Instance<LoginTransfer>) -> Page {
-    Page::contract_updates(
-        instance,
-        |_: &mut Context, _: &Theme, instance: Instance<LoginTransfer>| {
-            let status = transfer_status(&instance);
-            let transfer = instance.pending();
-            PageType::display(
-                "Sharing",
-                vec![
-                    Display::confirmation_message(status),
-                    Display::cta(
-                        "Login",
-                        Some(label(&transfer.entry)),
-                        login_username(&transfer.entry),
-                        vec![],
-                    ),
-                    Display::cta(
-                        "Recipient",
-                        Some(&transfer.recipient.to_string()),
-                        "",
-                        vec![],
-                    ),
-                ],
-                None,
-                Bumper::Done,
-                Offset::Start,
-            )
+fn share_sent(sent: Vec<Instance<LoginTransfer>>) -> Page {
+    let ids = sent.iter().map(Instance::id).collect::<Vec<_>>();
+    Page::watching(
+        Watch::list::<LoginTransfer>(),
+        move |_: &mut Context, _: &Theme, transfers: Vec<Instance<LoginTransfer>>| {
+            let confirmed = !ids.is_empty()
+                && ids.iter().all(|id| {
+                    transfers
+                        .iter()
+                        .find(|transfer| transfer.id() == *id)
+                        .is_some_and(|transfer| transfer.confirmed().is_some())
+                });
+            if confirmed {
+                shared_success_type()
+            } else {
+                PageType::display(
+                    "",
+                    vec![Display::instructions("Sharing…")],
+                    None,
+                    Bumper::Done,
+                    Offset::Center,
+                )
+            }
         },
     )
 }
@@ -1095,9 +1216,9 @@ impl Editor {
             signal: Signal::default(),
         }
     }
-    fn options_display(&self) -> Display {
+    fn option_actions(&self) -> Vec<chk::InputAction> {
         let options = *self.options.borrow();
-        let actions = [
+        [
             ("Capital letter", options.capital),
             ("Special character", options.special),
             ("Number", options.number),
@@ -1107,7 +1228,14 @@ impl Editor {
         .map(|(index, (label, selected))| {
             let options = self.options.clone();
             let signal = self.signal.clone();
-            ActionItem::new(
+            (
+                label.into(),
+                None,
+                if selected {
+                    Icons::Check
+                } else {
+                    Icons::Unchecked
+                },
                 Action::custom(move |_: &mut Context, _: &Theme| {
                     let mut options = options.borrow_mut();
                     let value = match index {
@@ -1118,16 +1246,9 @@ impl Editor {
                     *value = !*value;
                     signal.notify();
                 }),
-                label,
-                if selected {
-                    Icons::Check
-                } else {
-                    Icons::Unchecked
-                },
             )
         })
-        .collect();
-        Display::actions(actions, false)
+        .collect()
     }
 }
 fn text_field_result(field: Field, value: &str) -> Result<(), String> {
@@ -1224,6 +1345,9 @@ impl Watcher for LogoWatch {
     }
     fn get(&mut self, _: &mut Context) {}
 }
+#[path = "request_ui.rs"]
+mod request_pages;
+
 #[cfg(test)]
 #[path = "ui_tests.rs"]
 mod tests;

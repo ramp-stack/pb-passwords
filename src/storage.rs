@@ -383,10 +383,20 @@ pub(crate) mod tests {
         Arc<Mutex<HashMap<Id, crate::sharing::LoginTransfer>>>,
         Arc<AtomicBool>,
         Arc<Mutex<HashMap<Id, chk::profiles::Profile>>>,
+        Arc<Mutex<HashMap<Id, crate::requests::LoginRequest>>>,
+        Arc<Mutex<HashMap<Id, bool>>>,
+        Arc<Mutex<HashMap<Id, crate::requests::LoginRequest>>>,
+        Arc<AtomicBool>,
+        Arc<Mutex<HashMap<Id, bool>>>,
     );
     impl Default for MemoryAir {
         fn default() -> Self {
             Self(
+                Default::default(),
+                Default::default(),
+                Arc::new(AtomicBool::new(true)),
+                Default::default(),
+                Default::default(),
                 Default::default(),
                 Default::default(),
                 Arc::new(AtomicBool::new(true)),
@@ -401,10 +411,24 @@ pub(crate) mod tests {
         }
         fn instances(&self, contract: ContractType) -> Box<dyn traits::DynInstances> {
             if contract.id == crate::sharing::LoginTransfer::id() {
-                return Box::new(MemoryTransfers(self.1.clone()));
+                return Box::new(MemoryTransfers(
+                    self.1.clone(),
+                    self.7.clone(),
+                    self.8.clone(),
+                ));
             }
             if contract.id == chk::profiles::Profile::id() {
                 return Box::new(MemoryProfiles(self.3.clone()));
+            }
+            if contract.id == chk::blocking::Block::id() {
+                return Box::new(NoBlocks);
+            }
+            if contract.id == crate::requests::LoginRequest::id() {
+                return Box::new(MemoryRequests(
+                    self.4.clone(),
+                    self.5.clone(),
+                    self.6.clone(),
+                ));
             }
             assert_eq!(contract.id, PasswordContract::id());
             Box::new(self.clone())
@@ -413,6 +437,25 @@ pub(crate) mod tests {
             panic!("tests never start network services")
         }
         fn shutdown(&self, _: Key) {}
+    }
+
+    /// CHK's native contact view reads block state before PB replaces chat actions.
+    /// The password UI never creates or modifies block contracts.
+    #[derive(Clone, Debug)]
+    struct NoBlocks;
+    impl traits::DynInstances for NoBlocks {
+        fn create(&self, _: Request) -> Box<dyn traits::DynInstance> {
+            panic!("password contacts must not create chat block contracts")
+        }
+        fn list(&self) -> HashMap<Id, Box<dyn traits::DynInstance>> {
+            HashMap::new()
+        }
+        fn try_next(&mut self) -> Option<Box<dyn traits::DynInstance>> {
+            None
+        }
+        fn next(&mut self) -> traits::BoxFuture<'_, Box<dyn traits::DynInstance>> {
+            Box::pin(std::future::pending())
+        }
     }
 
     impl traits::DynInstances for MemoryAir {
@@ -502,7 +545,11 @@ pub(crate) mod tests {
     }
 
     #[derive(Clone, Debug)]
-    struct MemoryTransfers(Arc<Mutex<HashMap<Id, crate::sharing::LoginTransfer>>>);
+    struct MemoryTransfers(
+        Arc<Mutex<HashMap<Id, crate::sharing::LoginTransfer>>>,
+        Arc<AtomicBool>,
+        Arc<Mutex<HashMap<Id, bool>>>,
+    );
     impl traits::DynInstances for MemoryTransfers {
         fn create(&self, init: Request) -> Box<dyn traits::DynInstance> {
             let init = *init
@@ -514,7 +561,12 @@ pub(crate) mod tests {
                 .unwrap()
                 .entry(id)
                 .or_insert_with(|| crate::sharing::LoginTransfer::init(init, metadata(owner())));
-            Box::new(MemoryTransfer(self.0.clone(), id))
+            Box::new(MemoryTransfer(
+                self.0.clone(),
+                id,
+                self.1.clone(),
+                self.2.clone(),
+            ))
         }
         fn list(&self) -> HashMap<Id, Box<dyn traits::DynInstance>> {
             self.0
@@ -524,8 +576,12 @@ pub(crate) mod tests {
                 .map(|id| {
                     (
                         *id,
-                        Box::new(MemoryTransfer(self.0.clone(), *id))
-                            as Box<dyn traits::DynInstance>,
+                        Box::new(MemoryTransfer(
+                            self.0.clone(),
+                            *id,
+                            self.1.clone(),
+                            self.2.clone(),
+                        )) as Box<dyn traits::DynInstance>,
                     )
                 })
                 .collect()
@@ -538,7 +594,12 @@ pub(crate) mod tests {
         }
     }
     #[derive(Clone, Debug)]
-    struct MemoryTransfer(Arc<Mutex<HashMap<Id, crate::sharing::LoginTransfer>>>, Id);
+    struct MemoryTransfer(
+        Arc<Mutex<HashMap<Id, crate::sharing::LoginTransfer>>>,
+        Id,
+        Arc<AtomicBool>,
+        Arc<Mutex<HashMap<Id, bool>>>,
+    );
     impl traits::DynInstance for MemoryTransfer {
         fn id(&self) -> Id {
             self.1
@@ -571,6 +632,99 @@ pub(crate) mod tests {
             ))
         }
         fn confirmed(&self) -> Option<Box<dyn traits::DynRef + '_>> {
+            self.3
+                .lock()
+                .unwrap()
+                .get(&self.1)
+                .copied()
+                .unwrap_or_else(|| self.2.load(Ordering::Relaxed))
+                .then(|| self.pending())
+        }
+        fn try_next(&mut self) -> Option<traits::ContractUpdate> {
+            None
+        }
+        fn next(&mut self) -> traits::BoxFuture<'_, traits::ContractUpdate> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct MemoryRequests(
+        Arc<Mutex<HashMap<Id, crate::requests::LoginRequest>>>,
+        Arc<Mutex<HashMap<Id, bool>>>,
+        Arc<Mutex<HashMap<Id, crate::requests::LoginRequest>>>,
+    );
+    impl traits::DynInstances for MemoryRequests {
+        fn create(&self, init: Request) -> Box<dyn traits::DynInstance> {
+            let init = *init
+                .downcast::<crate::requests::LoginRequestInit>()
+                .unwrap();
+            let id = Id::hash(&init.nonce);
+            self.0
+                .lock()
+                .unwrap()
+                .entry(id)
+                .or_insert_with(|| crate::requests::LoginRequest::init(init, metadata(owner())));
+            Box::new(MemoryRequest(self.clone(), id))
+        }
+        fn list(&self) -> HashMap<Id, Box<dyn traits::DynInstance>> {
+            self.0
+                .lock()
+                .unwrap()
+                .keys()
+                .map(|id| {
+                    (
+                        *id,
+                        Box::new(MemoryRequest(self.clone(), *id)) as Box<dyn traits::DynInstance>,
+                    )
+                })
+                .collect()
+        }
+        fn try_next(&mut self) -> Option<Box<dyn traits::DynInstance>> {
+            None
+        }
+        fn next(&mut self) -> traits::BoxFuture<'_, Box<dyn traits::DynInstance>> {
+            Box::pin(std::future::pending())
+        }
+    }
+    #[derive(Clone, Debug)]
+    struct MemoryRequest(MemoryRequests, Id);
+    impl traits::DynInstance for MemoryRequest {
+        fn id(&self) -> Id {
+            self.1
+        }
+        fn notify(&self, enabled: bool) {
+            self.0.1.lock().unwrap().insert(self.1, enabled);
+        }
+        fn share(&self, recipient: Name) {
+            assert_eq!(
+                self.0.0.lock().unwrap().get(&self.1).unwrap().recipient,
+                recipient
+            );
+        }
+        fn send(&mut self, message: Request) -> Box<dyn traits::DynPending> {
+            let action = *message
+                .downcast::<crate::requests::RequestAction>()
+                .unwrap();
+            let result = self
+                .0
+                .0
+                .lock()
+                .unwrap()
+                .get_mut(&self.1)
+                .unwrap()
+                .apply(action, metadata(owner()));
+            Box::new(Receipt(result))
+        }
+        fn pending(&self) -> Box<dyn traits::DynRef + '_> {
+            Box::new(Snapshot(
+                self.0.0.lock().unwrap().get(&self.1).unwrap().clone(),
+            ))
+        }
+        fn confirmed(&self) -> Option<Box<dyn traits::DynRef + '_>> {
+            if let Some(confirmed) = self.0.2.lock().unwrap().get(&self.1).cloned() {
+                return Some(Box::new(Snapshot(confirmed)));
+            }
             Some(self.pending())
         }
         fn try_next(&mut self) -> Option<traits::ContractUpdate> {
@@ -653,6 +807,28 @@ pub(crate) mod tests {
     }
 
     impl MemoryAir {
+        /// Insert a request exactly as delivered, retaining both participant identities.
+        pub(crate) fn request(&self, request: crate::requests::LoginRequest) -> Id {
+            let id = Id::random();
+            self.4.lock().unwrap().insert(id, request);
+            id
+        }
+        pub(crate) fn request_notifications(&self, id: Id) -> Option<bool> {
+            self.5.lock().unwrap().get(&id).copied()
+        }
+        /// Keep the current confirmed request fixed while later actions stay optimistic.
+        pub(crate) fn hold_request_confirmation(&self, id: Id) {
+            let snapshot = self.4.lock().unwrap().get(&id).unwrap().clone();
+            self.6.lock().unwrap().insert(id, snapshot);
+        }
+        pub(crate) fn confirm_request(&self, id: Id) {
+            self.6.lock().unwrap().remove(&id);
+        }
+        /// Discard optimistic actions to simulate AIR rejecting an unconfirmed update.
+        pub(crate) fn rollback_request(&self, id: Id) {
+            let confirmed = self.6.lock().unwrap().remove(&id).unwrap();
+            self.4.lock().unwrap().insert(id, confirmed);
+        }
         pub(crate) fn profile(&self, profile: chk::profiles::Profile) -> Id {
             let id = Id::random();
             self.3.lock().unwrap().insert(id, profile);
@@ -660,6 +836,14 @@ pub(crate) mod tests {
         }
         pub(crate) fn confirm_private(&self, confirmed: bool) {
             self.2.store(confirmed, Ordering::Relaxed);
+        }
+        /// Hold newly created transfers until each is explicitly confirmed.
+        pub(crate) fn confirm_transfers(&self, confirmed: bool) {
+            self.7.store(confirmed, Ordering::Relaxed);
+            self.8.lock().unwrap().clear();
+        }
+        pub(crate) fn confirm_transfer(&self, id: Id) {
+            self.8.lock().unwrap().insert(id, true);
         }
         /// Simulate an already-arrived immutable copy in recipient UI tests.
         pub(crate) fn received(&self, mut transfer: crate::sharing::LoginTransfer) -> Id {
@@ -706,6 +890,11 @@ pub(crate) mod tests {
         let cache = serde_json::to_vec(&*memory.0.lock().unwrap()).unwrap();
         let restored_memory = MemoryAir(
             Arc::new(Mutex::new(serde_json::from_slice(&cache).unwrap())),
+            Default::default(),
+            Arc::new(AtomicBool::new(true)),
+            Default::default(),
+            Default::default(),
+            Default::default(),
             Default::default(),
             Arc::new(AtomicBool::new(true)),
             Default::default(),
